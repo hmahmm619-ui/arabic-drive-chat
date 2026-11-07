@@ -1,0 +1,77 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Common Security Helper Functions
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Health / Connection Test probe
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+    }
+
+    // Orders Collection: Accessible for Storefront Checkout, Receipt Lookup & Admin Dashboard
+    match /orders/{orderId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(orderId) && isValidOrder(incoming());
+      allow delete: if isValidId(orderId);
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['orderId', 'customerName', 'customerPhone', 'customerAddress', 'total', 'status'])
+        && data.orderId is string && data.orderId.size() <= 64
+        && data.customerName is string && data.customerName.size() <= 100
+        && data.customerPhone is string && data.customerPhone.size() <= 30
+        && data.customerAddress is string && data.customerAddress.size() <= 255
+        && data.total is number && data.total >= 0
+        && data.status is string && data.status.size() <= 60;
+    }
+
+    // Customers Collection: Registration Database for Kuwait Customers
+    match /customers/{customerId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(customerId) && isValidCustomer(incoming());
+      allow delete: if isValidId(customerId);
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['customerId', 'name', 'phone'])
+        && data.customerId is string && data.customerId.size() <= 64
+        && data.name is string && data.name.size() <= 100
+        && data.phone is string && data.phone.size() <= 30;
+    }
+
+    // Visitors, Bookings & Booking Steps Collections for real-time tracking
+    match /visitors/{sessionId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(sessionId);
+    }
+
+    match /bookings/{bookingId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(bookingId);
+    }
+
+    match /bookings_steps/{stepId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(stepId);
+    }
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+  }
+}

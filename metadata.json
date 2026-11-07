@@ -1,0 +1,8 @@
+{
+  "name": "دلمون الكويت | متجر الدواجن الطازجة في دولة الكويت",
+  "description": "المتجر الرسمي لشركة دلمون للدواجن في دولة الكويت — دجاج طازج يومياً، فيليه وصدور، دجاج متبل، وعروض التوفير مع توصيل مبرد فوري وسداد عبر كي نت (KNET).",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
