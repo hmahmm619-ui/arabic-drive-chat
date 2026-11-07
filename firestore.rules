@@ -24,32 +24,13 @@ service cloud.firestore {
     // Orders Collection: Accessible for Storefront Checkout, Receipt Lookup & Admin Dashboard
     match /orders/{orderId} {
       allow get, list: if true;
-      allow create, update: if isValidId(orderId) && isValidOrder(incoming());
-      allow delete: if isValidId(orderId);
+      allow create, update, delete: if isValidId(orderId);
     }
 
-    function isValidOrder(data) {
-      return data.keys().hasAll(['orderId', 'customerName', 'customerPhone', 'customerAddress', 'total', 'status'])
-        && data.orderId is string && data.orderId.size() <= 64
-        && data.customerName is string && data.customerName.size() <= 100
-        && data.customerPhone is string && data.customerPhone.size() <= 30
-        && data.customerAddress is string && data.customerAddress.size() <= 255
-        && data.total is number && data.total >= 0
-        && data.status is string && data.status.size() <= 60;
-    }
-
-    // Customers Collection: Registration Database for Kuwait Customers
+    // Customers Collection: Registration Database for Customers
     match /customers/{customerId} {
       allow get, list: if true;
-      allow create, update: if isValidId(customerId) && isValidCustomer(incoming());
-      allow delete: if isValidId(customerId);
-    }
-
-    function isValidCustomer(data) {
-      return data.keys().hasAll(['customerId', 'name', 'phone'])
-        && data.customerId is string && data.customerId.size() <= 64
-        && data.name is string && data.name.size() <= 100
-        && data.phone is string && data.phone.size() <= 30;
+      allow create, update, delete: if isValidId(customerId);
     }
 
     // Visitors, Bookings & Booking Steps Collections for real-time tracking
@@ -66,6 +47,11 @@ service cloud.firestore {
     match /bookings_steps/{stepId} {
       allow get, list: if true;
       allow create, update, delete: if isValidId(stepId);
+    }
+
+    match /settings/{settingId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(settingId);
     }
 
     // Global Safety Net (Default Deny)

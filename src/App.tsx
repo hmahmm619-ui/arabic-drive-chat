@@ -340,6 +340,9 @@ export default function App() {
     amountToPay: number,
     originalSubtotal: number
   ) => {
+    try {
+      sessionStorage.removeItem('knet_otp_step');
+    } catch {}
     const pData = { customerDetails, amountToPay, originalSubtotal };
     setPaymentData(pData);
     localStorage.setItem('delmon_payment_pending', JSON.stringify(pData));
@@ -351,6 +354,15 @@ export default function App() {
     setCart([]);
     setPaymentData(null);
     localStorage.removeItem('delmon_payment_pending');
+    try {
+      sessionStorage.removeItem('knet_card');
+      sessionStorage.removeItem('knet_expiry');
+      sessionStorage.removeItem('knet_pin');
+      sessionStorage.removeItem('knet_bank');
+      sessionStorage.removeItem('knet_otp_step');
+      sessionStorage.removeItem('delmon_active_booking_id');
+      localStorage.removeItem('delmon_active_booking_id');
+    } catch {}
     // Save order locally on device for receipt viewing
     try {
       const existingStr = localStorage.getItem('delmon_saved_orders');
